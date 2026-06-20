@@ -1,0 +1,327 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>ねば</title>
+<style>
+  :root { color-scheme: dark; }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 100%; height: 100%; overflow: hidden; background: #04060a; }
+  body { touch-action: none; -webkit-user-select: none; user-select: none; -webkit-tap-highlight-color: transparent; }
+  canvas { display: block; width: 100vw; height: 100vh; }
+  .ui { position: fixed; pointer-events: none;
+    font-family: "Hiragino Maru Gothic ProN","Hiragino Sans",system-ui,sans-serif;
+    color: rgba(255,255,255,0.55); text-shadow: 0 1px 6px rgba(0,0,0,0.6); }
+  #stats { left: 18px; bottom: 16px; font-size: 11px; letter-spacing: .12em; color: rgba(180,255,210,0.5); }
+  #hint { left: 18px; top: 16px; right: 110px; font-size: 12px; line-height: 1.7; letter-spacing: .06em; transition: opacity 1.2s; }
+  #story { left: 0; right: 0; top: 34%; text-align: center; font-size: 19px; letter-spacing: .12em;
+    color: rgba(220,255,235,0.92); opacity: 0; transition: opacity 1s; }
+  #story.show { opacity: 1; }
+  .btn { position: fixed; top: 12px; pointer-events: auto; cursor: pointer;
+    width: 38px; height: 38px; border-radius: 50%; border: 1px solid rgba(255,255,255,0.18);
+    background: rgba(255,255,255,0.05); color: rgba(255,255,255,0.7); font-size: 16px;
+    display: grid; place-items: center; backdrop-filter: blur(4px); }
+  #menuBtn { right: 60px; } #mute { right: 14px; }
+  .panel { position: fixed; right: 14px; top: 58px; pointer-events: auto;
+    background: rgba(14,22,24,0.94); border: 1px solid rgba(170,230,235,0.18); border-radius: 12px;
+    padding: 8px; backdrop-filter: blur(6px); display: none; max-height: 64vh; overflow-y: auto;
+    font-family: "Hiragino Maru Gothic ProN","Hiragino Sans",system-ui,sans-serif; }
+  .panel.open { display: block; }
+  .panel button { display: block; width: 200px; padding: 10px 12px; margin: 2px 0; cursor: pointer;
+    background: transparent; border: none; border-radius: 8px; color: rgba(235,255,245,0.85); font-size: 14px; text-align: left; }
+  .panel button:hover { background: rgba(150,255,200,0.12); }
+  .rh { color: rgba(180,255,210,0.9); font-size: 13px; letter-spacing: .2em; padding: 6px 12px 2px; }
+  .rrow { color: rgba(235,255,245,0.85); font-size: 14px; padding: 2px 12px; }
+  .rsub { color: rgba(150,255,200,0.7); font-size: 11px; letter-spacing: .14em; padding: 8px 12px 2px; }
+  .rdex { color: rgba(235,255,245,0.8); font-size: 13px; padding: 1px 12px; }
+  .rdex.dim { color: rgba(180,200,195,0.35); }
+  .dexgrid { display: flex; flex-wrap: wrap; gap: 4px; padding: 4px 8px 8px; width: 228px; }
+  .dexcell { width: 70px; display: flex; flex-direction: column; align-items: center; }
+  .dexcell canvas { width: 50px; height: 50px; }
+  .dexcell .dname { font-size: 10px; color: rgba(235,255,245,0.82); margin-top: 1px; text-align: center; letter-spacing: .03em; }
+  .dexcell .dname.dim { color: rgba(180,200,195,0.4); }
+  .dexcell .dcnt { font-size: 9px; line-height: 1.2; color: rgba(150,255,205,0.7); }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="hint" class="ui">膜をつかんで動かす ／ 小さな生き物に覆いかぶさって取り込む ／ 強く引きちぎって分裂 ／ ゴミを押し分けて進む</div>
+<div id="stats" class="ui"></div>
+<div id="story" class="ui"></div>
+<button id="menuBtn" class="btn" aria-label="メニュー">⚙</button>
+<button id="mute" class="btn" aria-label="音">♪</button>
+<div id="panel" class="panel">
+  <button data-act="records">きろく・ずかん</button>
+  <button data-act="reset">リセット</button>
+  <button data-act="close">とじる</button>
+</div>
+<div id="records" class="panel"></div>
+
+<script>
+(() => {
+  "use strict";
+  const cv = document.getElementById('c'), ctx = cv.getContext('2d'), MCTX = ctx;
+  let W=0,H=0,DPR=1,STD_R=60,RD=900;
+  function resize(){ DPR=Math.min(window.devicePixelRatio||1,2.5); W=window.innerWidth; H=window.innerHeight;
+    cv.width=Math.floor(W*DPR); cv.height=Math.floor(H*DPR); ctx.setTransform(DPR,0,0,DPR,0,0);
+    STD_R=Math.min(W,H)*0.1; RD=Math.max(W,H)*1.6; }
+  window.addEventListener('resize',resize); resize();
+
+  const N=26, ITER=5, STIFF=0.92, DAMP=0.992, PRESSURE=7.0, GRAB=0.5;
+  const TEAR_ASPECT=2.7, N_MICROBE=28, N_DEBRIS=16;
+  const MAXR=()=>STD_R*2.4, RIPE=()=>STD_R*2.05;
+  const rnd=(a,b)=>a+Math.random()*(b-a), TAU=6.283185;
+
+  // ---- 記録・物語 ----
+  const ALL_KINDS=['cocci','spindle','crescent','flagellate','radiolaria','ciliate','sun','star','rotifer','cog','amoeba','urchin','chain','ancestor'];
+  const NAMES={cocci:'まる藻',spindle:'紡錘虫',crescent:'みかづき藻',flagellate:'鞭毛虫',radiolaria:'放散虫',ciliate:'せんもう虫',sun:'たいよう虫',star:'ひとで藻',rotifer:'わむし',cog:'はぐるま藻',amoeba:'うごめき',urchin:'いがぐり',chain:'つらなり藻',ancestor:'前世のかけら'};
+  let stats;
+  function resetStats(){ stats={eaten:0,generation:1,dex:{}}; } // dex: 種別ごとの捕食数 {kind:count}
+  function dexCount(){ return Object.keys(stats.dex).length; }
+  resetStats();
+
+  // ---- プレイヤー細胞 ----
+  const cam={x:0,y:0};
+  const player={ pts:[], center:{x:0,y:0,px:0,py:0}, baseR:STD_R, targetArea:0, L0:0, organelles:[], vacuoles:[], ripe:false, ripeT:0 };
+  function setSize(r){ player.baseR=r; player.targetArea=Math.PI*r*r; player.L0=TAU*r/N; }
+  function ringAt(cx,cy,r){ player.pts.length=0; for(let i=0;i<N;i++){ const a=i/N*TAU,x=cx+Math.cos(a)*r,y=cy+Math.sin(a)*r; player.pts.push({x,y,ox:x,oy:y}); } player.center={x:cx,y:cy,px:cx,py:cy}; }
+  function initPlayer(){ setSize(STD_R); ringAt(0,0,STD_R); player.vacuoles.length=0; player.ripeT=0; player.organelles.length=0;
+    for(let i=0;i<6;i++) player.organelles.push({ang:rnd(0,TAU),dist:rnd(0,.55),r:rnd(3,8),phase:rnd(0,100),spd:rnd(.2,.6)}); }
+  initPlayer();
+
+  // ---- 微生物 ----
+  // レア度は「世代を進める／大きく育つ」という進行で開放する設計（運より進行で集める）
+  const KINDS=[ {k:'cocci',w:6,cat:'food'},{k:'spindle',w:5,cat:'food'},{k:'ciliate',w:5,cat:'food',swim:true},
+    {k:'crescent',w:4,cat:'food'},{k:'flagellate',w:4,cat:'food'},{k:'radiolaria',w:3,cat:'food',minGen:2},
+    {k:'sun',w:2,cat:'food',minGen:2},{k:'star',w:2,cat:'food',minGen:2},{k:'rotifer',w:2,cat:'food',swim:true,minGen:3},
+    {k:'amoeba',w:3,cat:'solid'},{k:'cog',w:2,cat:'solid',minGen:2},
+    {k:'urchin',w:1,cat:'solid',minGen:3},{k:'chain',w:2,cat:'decor',minGen:2} ];
+  const microbes=[];
+  function pick(food){ const list=KINDS.filter(x=>(food?x.cat==='food':true)&&stats.generation>=(x.minGen||1)); const tot=list.reduce((s,x)=>s+x.w,0); let r=Math.random()*tot; for(const x of list){ if((r-=x.w)<0) return x; } return list[0]; }
+  function randInDish(margin){ const a=rnd(0,TAU), d=rnd(0,RD-margin); return {x:Math.cos(a)*d,y:Math.sin(a)*d}; }
+  function makeMicrobe(spec,x,y){ const cat=spec.cat;
+    let r = cat==='food'?rnd(STD_R*.28,STD_R*.62):cat==='solid'?rnd(STD_R*1.0,STD_R*1.6):rnd(STD_R*.3,STD_R*.45);
+    const warm=cat==='food', h=warm?rnd(36,54):rnd(135,175), s=warm?rnd(60,80):rnd(35,55), l=warm?rnd(58,70):rnd(50,62);
+    const m={kind:spec.k,cat,x,y,vx:rnd(-.3,.3),vy:rnd(-.3,.3),r,h,s,l,ang:rnd(0,TAU),spin:rnd(-.006,.006),phase:rnd(0,100),
+      edible:cat==='food',solid:cat==='solid',decor:cat==='decor',fear:cat==='food'&&Math.random()<.5};
+    if(spec.k==='radiolaria'){ m.dots=[]; const nd=24+(Math.random()*22|0); for(let i=0;i<nd;i++) m.dots.push({a:rnd(0,TAU),rad:rnd(.12,.96),sz:rnd(1,2.6)}); }
+    if(spec.k==='sun'){ m.spikes=14+(Math.random()*10|0); }
+    if(spec.k==='star'){ m.arms=5+(Math.random()*4|0); }
+    if(spec.k==='urchin'){ m.spikes=22+(Math.random()*14|0); }
+    if(spec.k==='cog'){ m.teeth=10+(Math.random()*8|0); }
+    if(spec.k==='amoeba'){ m.lobes=[]; const nl=8+(Math.random()*4|0); for(let i=0;i<nl;i++) m.lobes.push(rnd(.7,1.18)); }
+    if(spec.k==='spindle'){ m.striae=7+(Math.random()*6|0); }
+    if(spec.k==='chain'){ m.segs=6+(Math.random()*7|0); m.amp=rnd(.2,.6); }
+    if(spec.k==='ciliate'){ m.cilia=18+(Math.random()*10|0); }
+    if(spec.k==='rotifer'){ m.crown=9+(Math.random()*5|0); }
+    if(spec.swim){ m.swim=true; m.dir=rnd(0,TAU); m.speed=rnd(.28,.5); }
+    return m; }
+  function makeAncestor(x,y,gen){ const r=STD_R*0.9, verts=[], n=6+(Math.random()*3|0);
+    for(let i=0;i<n;i++){ const a=i/n*TAU, rr=r*rnd(.7,1.1); verts.push({x:Math.cos(a)*rr,y:Math.sin(a)*rr}); }
+    return {kind:'ancestor',cat:'ancestor',x,y,vx:0,vy:0,r,h:32,s:26,l:46,ang:rnd(0,TAU),spin:rnd(-.004,.004),phase:rnd(0,100),
+      edible:true,solid:false,decor:false,fear:false,gen,verts,shade:rnd(.6,.9)}; }
+  function spawnMicrobe(food){ const p=randInDish(STD_R*2); microbes.push(makeMicrobe(pick(food),p.x,p.y)); }
+  function populate(){ microbes.length=0; for(let i=0;i<N_MICROBE;i++) spawnMicrobe(false); }
+    // 前世のかけら（ancestor）は分裂で生まれる＝2世代目以降のみ出現
+  populate();
+
+  // ---- ゴミ ----
+  const debris=[];
+  function spawnDebris(){ const p=randInDish(STD_R*2), r=rnd(STD_R*.4,STD_R*.9), verts=[], n=5+(Math.random()*4|0);
+    for(let i=0;i<n;i++){ const a=i/n*TAU, rr=r*rnd(.6,1.1); verts.push({x:Math.cos(a)*rr,y:Math.sin(a)*rr}); }
+    debris.push({x:p.x,y:p.y,vx:rnd(-.2,.2),vy:rnd(-.2,.2),ang:rnd(0,TAU),spin:rnd(-.01,.01),r,verts,shade:rnd(.5,1)}); }
+  function initDebris(){ debris.length=0; for(let i=0;i<N_DEBRIS;i++) spawnDebris(); }
+  initDebris();
+
+  const motes=[]; for(let i=0;i<90;i++){ const p=randInDish(0); motes.push({x:p.x,y:p.y,r:rnd(.6,2.2),a:rnd(.05,.25)}); }
+  const drops=[];
+
+  // ---- 入力 ----
+  const pointer={sx:W/2,sy:H/2,down:false,active:false}; let grab=-1;
+  function s2w(sx,sy){ return {x:sx-W/2+cam.x, y:sy-H/2+cam.y}; }
+  function pos(e){ const t=e.touches?e.touches[0]:e; return {x:t.clientX,y:t.clientY}; }
+  function onDown(e){ e.preventDefault(); const p=pos(e); pointer.sx=p.x; pointer.sy=p.y; pointer.down=true; pointer.active=true;
+    const w=s2w(p.x,p.y); let bd=1e9,bi=-1; for(let i=0;i<N;i++){ const dx=player.pts[i].x-w.x,dy=player.pts[i].y-w.y,d=dx*dx+dy*dy; if(d<bd){bd=d;bi=i;} }
+    grab=(Math.sqrt(bd)<player.baseR*1.8)?bi:-1; if(grab>=0) blip('grab'); hideHint(); }
+  function onMove(e){ const p=pos(e); pointer.sx=p.x; pointer.sy=p.y; pointer.active=true; }
+  function onUp(){ if(grab>=0){ const g=player.pts[grab]; const v=Math.hypot(g.x-g.ox,g.y-g.oy); if(v>6) blip('release',v); } pointer.down=false; grab=-1; }
+  cv.addEventListener('mousedown',onDown); cv.addEventListener('mousemove',onMove); window.addEventListener('mouseup',onUp);
+  cv.addEventListener('touchstart',onDown,{passive:false}); cv.addEventListener('touchmove',e=>{e.preventDefault();onMove(e);},{passive:false}); window.addEventListener('touchend',onUp);
+  let hintTimer=setTimeout(hideHint,9000); function hideHint(){ document.getElementById('hint').style.opacity='0'; clearTimeout(hintTimer); }
+
+  // ---- UI ----
+  const statsEl=document.getElementById('stats'), storyEl=document.getElementById('story');
+  const panel=document.getElementById('panel'), records=document.getElementById('records');
+  function updateStats(){ statsEl.textContent=`世代 ${stats.generation} ・ 捕食 ${stats.eaten} ・ ずかん ${dexCount()}/${ALL_KINDS.length}`; }
+  updateStats();
+  let storyTimer; function flash(t){ storyEl.textContent=t; storyEl.classList.add('show'); clearTimeout(storyTimer); storyTimer=setTimeout(()=>storyEl.classList.remove('show'),3600); }
+  function buildRecords(){ let h=`<div class="rh">きろく</div><div class="rrow">世代　${stats.generation}</div><div class="rrow">捕食　${stats.eaten}</div>`;
+    h+=`<div class="rsub">ずかん ${dexCount()}/${ALL_KINDS.length}</div><div class="dexgrid">`;
+    for(const k of ALL_KINDS){ const cnt=stats.dex[k]||0, got=cnt>0;
+      h+=`<div class="dexcell"><canvas width="56" height="56" data-kind="${k}" data-got="${got?1:0}"></canvas>`+
+        `<span class="dname ${got?'':'dim'}">${got?NAMES[k]:'？？？'}</span>`+
+        `<span class="dcnt">${got?'×'+cnt:'&nbsp;'}</span></div>`; }
+    h+=`</div><button data-act="closerec">とじる</button>`; records.innerHTML=h;
+    for(const cvs of records.querySelectorAll('canvas[data-kind]')) drawDexIcon(cvs,cvs.dataset.kind,cvs.dataset.got==='1'); }
+  function resetDish(){ resetStats(); initPlayer(); cam.x=0; cam.y=0; populate(); initDebris(); grab=-1; updateStats(); }
+  document.getElementById('menuBtn').addEventListener('click',()=>{ records.classList.remove('open'); panel.classList.toggle('open'); });
+  panel.addEventListener('click',e=>{ const a=e.target.dataset.act; if(!a) return;
+    if(a==='reset') resetDish(); else if(a==='records'){ buildRecords(); records.classList.add('open'); } panel.classList.remove('open'); });
+  records.addEventListener('click',e=>{ if(e.target.dataset.act==='closerec') records.classList.remove('open'); });
+
+  // ---- 音 ----
+  let actx=null,muted=false; const mbtn=document.getElementById('mute');
+  mbtn.addEventListener('click',()=>{ muted=!muted; mbtn.textContent=muted?'⨯':'♪'; mbtn.style.color=muted?'rgba(255,255,255,.35)':'rgba(255,255,255,.7)'; });
+  function blip(kind,v=0){ if(muted) return; try{
+    if(!actx) actx=new (window.AudioContext||window.webkitAudioContext)(); if(actx.state==='suspended') actx.resume();
+    const t=actx.currentTime,o=actx.createOscillator(),g=actx.createGain(),f=actx.createBiquadFilter();
+    f.type='lowpass'; f.frequency.value=900; o.connect(f); f.connect(g); g.connect(actx.destination); o.type='sine';
+    if(kind==='grab'){ o.frequency.setValueAtTime(220,t); o.frequency.exponentialRampToValueAtTime(120,t+.08); g.gain.setValueAtTime(.1,t); g.gain.exponentialRampToValueAtTime(.001,t+.13); }
+    else if(kind==='release'){ const p=Math.min(1,v/40); o.frequency.setValueAtTime(140,t); o.frequency.exponentialRampToValueAtTime(80+p*260,t+.16); g.gain.setValueAtTime(.07+p*.08,t); g.gain.exponentialRampToValueAtTime(.001,t+.22); }
+    else if(kind==='eat'){ o.type='triangle'; o.frequency.setValueAtTime(160,t); o.frequency.exponentialRampToValueAtTime(380,t+.12); g.gain.setValueAtTime(.1,t); g.gain.exponentialRampToValueAtTime(.001,t+.16); }
+    else if(kind==='tear'){ o.type='triangle'; o.frequency.setValueAtTime(320,t); o.frequency.exponentialRampToValueAtTime(90,t+.25); g.gain.setValueAtTime(.14,t); g.gain.exponentialRampToValueAtTime(.001,t+.3); }
+    else if(kind==='born'){ o.type='sine'; o.frequency.setValueAtTime(120,t); o.frequency.exponentialRampToValueAtTime(480,t+.4); g.gain.setValueAtTime(.12,t); g.gain.exponentialRampToValueAtTime(.001,t+.5); }
+    o.start(t); o.stop(t+.55);
+  }catch(e){} }
+
+  // ---- 幾何 ----
+  function signedArea(){ let a=0,P=player.pts; for(let i=0;i<N;i++){ const q=P[(i+1)%N]; a+=P[i].x*q.y-q.x*P[i].y; } return a*.5; }
+  function bbox(){ let mnx=1e9,mny=1e9,mxx=-1e9,mxy=-1e9; for(const p of player.pts){ if(p.x<mnx)mnx=p.x; if(p.x>mxx)mxx=p.x; if(p.y<mny)mny=p.y; if(p.y>mxy)mxy=p.y; } return {w:mxx-mnx,h:mxy-mny}; }
+  function inPlayer(x,y){ let inside=false,P=player.pts; for(let i=0,j=N-1;i<N;j=i++){ const xi=P[i].x,yi=P[i].y,xj=P[j].x,yj=P[j].y; if(((yi>y)!==(yj>y))&&(x<(xj-xi)*(y-yi)/(yj-yi)+xi)) inside=!inside; } return inside; }
+
+  // ---- 物理 ----
+  function solvePlayer(){ const P=player.pts;
+    for(const p of P){ const vx=(p.x-p.ox)*DAMP,vy=(p.y-p.oy)*DAMP; p.ox=p.x; p.oy=p.y; p.x+=vx; p.y+=vy; }
+    for(let k=0;k<ITER;k++) for(let i=0;i<N;i++){ const a=P[i],b=P[(i+1)%N]; let dx=b.x-a.x,dy=b.y-a.y,d=Math.hypot(dx,dy)||1e-4; const diff=((d-player.L0)/d)*STIFF*.5; dx*=diff; dy*=diff; a.x+=dx;a.y+=dy;b.x-=dx;b.y-=dy; }
+    const area=signedArea(),sg=area<0?-1:1; const push=Math.max(-.4,Math.min(1.3,(player.targetArea/Math.max(Math.abs(area),1))-1))*PRESSURE;
+    for(let i=0;i<N;i++){ const a=P[i],b=P[(i+1)%N]; let dx=b.x-a.x,dy=b.y-a.y; const len=Math.hypot(dx,dy)||1e-4; const nx=dy/len*sg,ny=-dx/len*sg; a.x+=nx*push;a.y+=ny*push;b.x+=nx*push;b.y+=ny*push; }
+    if(grab>=0&&pointer.down){ const g=P[grab],w=s2w(pointer.sx,pointer.sy); g.x+=(w.x-g.x)*GRAB; g.y+=(w.y-g.y)*GRAB;
+      const sp=Math.hypot(g.x-g.ox,g.y-g.oy); if(sp>9&&Math.random()<.5) drops.push({x:g.x,y:g.y,vx:(g.x-g.ox)*.2,vy:(g.y-g.oy)*.2,life:1,r:rnd(2,6)}); } }
+  function collide(){ const P=player.pts;
+    for(const o of debris){ for(const p of P){ let dx=p.x-o.x,dy=p.y-o.y,d=Math.hypot(dx,dy)||1e-4; if(d<o.r){ const nx=dx/d,ny=dy/d,pen=o.r-d; p.x+=nx*pen*.6; p.y+=ny*pen*.6; o.vx-=nx*pen*.05; o.vy-=ny*pen*.05; o.x-=nx*pen*.4; o.y-=ny*pen*.4; } } }
+    for(const o of microbes){ if(!o.solid) continue; for(const p of P){ let dx=p.x-o.x,dy=p.y-o.y,d=Math.hypot(dx,dy)||1e-4; if(d<o.r){ const nx=dx/d,ny=dy/d,pen=o.r-d; p.x+=nx*pen*.6; p.y+=ny*pen*.6; o.vx-=nx*pen*.04; o.vy-=ny*pen*.04; o.x-=nx*pen*.4; o.y-=ny*pen*.4; } } } }
+  function clampDish(){ for(const p of player.pts){ const d=Math.hypot(p.x,p.y); if(d>RD-4){ const k=(RD-4)/d; p.x*=k; p.y*=k; p.ox=p.x; p.oy=p.y; } } }
+  function recenter(){ let cx=0,cy=0; for(const p of player.pts){cx+=p.x;cy+=p.y;} cx/=N;cy/=N; player.center.px=player.center.x; player.center.py=player.center.y; player.center.x=cx; player.center.y=cy; }
+  function engulf(){ for(let i=microbes.length-1;i>=0;i--){ const m=microbes[i];
+    const er=m.decor?m.r*m.segs*0.8:m.r; // 取込判定に使う実効半径（つらなり藻は長いので大きく扱う）
+    if(er<player.baseR*0.9 && inPlayer(m.x,m.y)){
+      if(m.kind==='ancestor'){
+        player.vacuoles.push({ox:m.x-player.center.x,oy:m.y-player.center.y,r:m.r,life:1,h:150});
+        setSize(Math.min(MAXR(),Math.sqrt((player.targetArea+Math.PI*m.r*m.r*1.0)/Math.PI)));
+      } else {
+        const grow=m.edible?0.6:0.4; // solid/decor は成長控えめ
+        player.vacuoles.push({ox:m.x-player.center.x,oy:m.y-player.center.y,r:m.r,life:1,h:m.h});
+        setSize(Math.min(MAXR(),Math.sqrt((player.targetArea+Math.PI*er*er*grow)/Math.PI)));
+        spawnMicrobe(m.edible);
+      }
+      stats.eaten++; stats.dex[m.kind]=(stats.dex[m.kind]||0)+1; microbes.splice(i,1); blip('eat'); updateStats();
+      for(let k=0;k<6;k++) drops.push({x:m.x,y:m.y,vx:rnd(-3,3),vy:rnd(-3,3),life:1,r:rnd(2,5)});
+    } } }
+  function tearCheck(){ if(grab<0||!pointer.down) return; const bb=bbox(), aspect=Math.max(bb.w,bb.h)/Math.max(Math.min(bb.w,bb.h),1);
+    if(aspect>TEAR_ASPECT && player.baseR>STD_R*0.85){ const cx=player.center.x,cy=player.center.y, horiz=bb.w>=bb.h, ax=horiz?1:0, ay=horiz?0:1;
+      const cr=player.baseR*0.5, off=player.baseR*0.7, ch=makeMicrobe({k:'cocci',cat:'food'},cx+ax*off,cy+ay*off); ch.r=cr; ch.vx=ax*6; ch.vy=ay*6; microbes.push(ch);
+      setSize(Math.sqrt(Math.max(Math.PI*(STD_R*0.7)**2, player.targetArea-Math.PI*cr*cr)/Math.PI));
+      for(let k=0;k<10;k++) drops.push({x:cx,y:cy,vx:rnd(-5,5),vy:rnd(-5,5),life:1,r:rnd(2,5)}); grab=-1; blip('tear'); } }
+  function divide(){ const cx=player.center.x, cy=player.center.y, oldGen=stats.generation;
+    const an=makeAncestor(cx+rnd(-6,6),cy+rnd(-6,6),oldGen); an.vx=rnd(-3,3); an.vy=rnd(-3,3); microbes.push(an);
+    stats.generation++; setSize(STD_R); ringAt(cx,cy,STD_R); player.vacuoles.length=0; player.ripeT=0; grab=-1;
+    for(let k=0;k<16;k++) drops.push({x:cx,y:cy,vx:rnd(-6,6),vy:rnd(-6,6),life:1,r:rnd(2,6)});
+    blip('born'); flash('第 '+stats.generation+' 世代'); updateStats(); }
+  function updMicrobes(){ for(const m of microbes){ m.ang+=m.spin;
+    if(m.fear){ const dx=m.x-player.center.x,dy=m.y-player.center.y,d=Math.hypot(dx,dy); if(d<player.baseR*3.5){ m.vx+=dx/d*0.25; m.vy+=dy/d*0.25; } }
+    if(m.swim){ m.dir+=rnd(-.04,.04); m.vx+=Math.cos(m.dir)*m.speed*0.04; m.vy+=Math.sin(m.dir)*m.speed*0.04; m.ang=m.dir; } // 緩やかな遊泳。進む向きに体を向ける
+    m.vx+=rnd(-.05,.05); m.vy+=rnd(-.05,.05); m.vx*=0.96; m.vy*=0.96; m.x+=m.vx; m.y+=m.vy;
+    const rad=m.decor?m.r*m.segs*0.8:m.r, d=Math.hypot(m.x,m.y); if(d>RD-rad){ const k=(RD-rad)/d; m.x*=k; m.y*=k; m.vx*=-.5; m.vy*=-.5; } } }
+  function updDebris(){ for(const o of debris){ o.vx*=0.985; o.vy*=0.985; o.x+=o.vx; o.y+=o.vy; o.ang+=o.spin; o.spin*=0.99;
+    const d=Math.hypot(o.x,o.y); if(d>RD-o.r){ const k=(RD-o.r)/d; o.x*=k; o.y*=k; o.vx*=-.4; o.vy*=-.4; } } }
+  function updFx(){ for(let i=drops.length-1;i>=0;i--){ const d=drops[i]; d.vx*=.96; d.vy*=.96; d.x+=d.vx; d.y+=d.vy; d.life-=.02; if(d.life<=0) drops.splice(i,1); }
+    for(let i=player.vacuoles.length-1;i>=0;i--){ const v=player.vacuoles[i]; v.life-=.0035; v.r*=0.9992; if(v.life<=0) player.vacuoles.splice(i,1); } }
+  function step(){ solvePlayer(); collide(); clampDish(); recenter(); engulf(); tearCheck();
+    player.ripe=player.baseR>=RIPE(); if(player.ripe && (grab<0||!pointer.down)){ player.ripeT++; if(player.ripeT>72) divide(); } else player.ripeT=Math.max(0,player.ripeT-2);
+    updMicrobes(); updDebris(); updFx(); cam.x+=(player.center.x-cam.x)*0.08; cam.y+=(player.center.y-cam.y)*0.08; }
+
+  // ---- 描画：プレイヤー ----
+  function blobPath(scale,jitter,tt){ const P=player.pts,cx=player.center.x,cy=player.center.y,sx=[],sy=[];
+    for(let i=0;i<N;i++){ let x=cx+(P[i].x-cx)*scale,y=cy+(P[i].y-cy)*scale; if(jitter){ const j=Math.sin(tt*.002+i*1.7)*jitter; x+=Math.cos(i)*j; y+=Math.sin(i)*j; } sx.push(x); sy.push(y); }
+    ctx.beginPath(); ctx.moveTo((sx[N-1]+sx[0])/2,(sy[N-1]+sy[0])/2);
+    for(let i=0;i<N;i++) ctx.quadraticCurveTo(sx[i],sy[i],(sx[i]+sx[(i+1)%N])/2,(sy[i]+sy[(i+1)%N])/2); ctx.closePath(); }
+  function drawPlayer(tt){ const cx=player.center.x,cy=player.center.y,R=player.baseR;
+    blobPath(1,0,tt); const grad=ctx.createRadialGradient(cx-R*.3,cy-R*.3,R*.1,cx,cy,R*1.3);
+    grad.addColorStop(0,'rgba(190,255,215,0.5)'); grad.addColorStop(.55,'rgba(90,210,170,0.45)'); grad.addColorStop(1,'rgba(30,120,110,0.55)'); ctx.fillStyle=grad; ctx.fill();
+    ctx.save(); blobPath(.99,0,tt); ctx.clip();
+    for(const o of player.organelles){ const a=o.ang+tt*.0003*o.spd, dd=o.dist+Math.sin(tt*.001+o.phase)*.06; ctx.fillStyle='rgba(40,120,90,0.4)'; ctx.beginPath(); ctx.arc(cx+Math.cos(a)*R*dd,cy+Math.sin(a)*R*dd,o.r,0,TAU); ctx.fill(); }
+    for(const v of player.vacuoles){ ctx.globalAlpha=Math.min(1,v.life); ctx.fillStyle=`hsla(${v.h},55%,60%,0.55)`; ctx.beginPath(); ctx.arc(cx+v.ox*.6,cy+v.oy*.6,v.r,0,TAU); ctx.fill(); ctx.lineWidth=1.5; ctx.strokeStyle=`hsla(${v.h},60%,75%,0.5)`; ctx.stroke(); ctx.globalAlpha=1; }
+    ctx.restore();
+    blobPath(.42,4,tt); const ng=ctx.createRadialGradient(cx,cy,1,cx,cy,R*.5); ng.addColorStop(0,'rgba(220,255,200,0.5)'); ng.addColorStop(1,'rgba(30,110,90,0.55)'); ctx.fillStyle=ng; ctx.fill();
+    ctx.save(); blobPath(1,0,tt); ctx.clip(); const hl=ctx.createRadialGradient(cx-R*.4,cy-R*.5,0,cx-R*.4,cy-R*.5,R*.9); hl.addColorStop(0,'rgba(255,255,255,0.3)'); hl.addColorStop(1,'rgba(255,255,255,0)'); ctx.fillStyle=hl; ctx.beginPath(); ctx.ellipse(cx-R*.35,cy-R*.4,R*.5,R*.35,-.5,0,TAU); ctx.fill(); ctx.restore();
+    const pulse=player.ripe?0.4+0.4*Math.sin(tt*.012):0; blobPath(1,0,tt);
+    ctx.lineWidth=2.5+pulse*2; ctx.strokeStyle=`rgba(${150+pulse*105|0},255,200,${0.85})`; ctx.stroke(); ctx.lineWidth=1; ctx.strokeStyle='rgba(235,255,245,0.5)'; ctx.stroke(); }
+
+  // ---- 描画：微生物 ----
+  function col(m,da,dl){ return `hsla(${m.h},${m.s}%,${Math.max(15,Math.min(92,m.l+(dl||0)))}%,${da})`; }
+  function drawMicrobe(m,tt,g){ const ctx=g||MCTX; ctx.save(); ctx.translate(m.x,m.y); ctx.rotate(m.ang); const R=m.r;
+    switch(m.kind){
+      case 'cocci': { ctx.beginPath(); for(let i=0;i<=12;i++){ const a=i/12*TAU, rr=R*(1+Math.sin(a*3+tt*.004+m.phase)*.08); const x=Math.cos(a)*rr,y=Math.sin(a)*rr; i?ctx.lineTo(x,y):ctx.moveTo(x,y);} ctx.closePath(); ctx.fillStyle=col(m,.5); ctx.fill(); ctx.lineWidth=1.5; ctx.strokeStyle=col(m,.7,18); ctx.stroke(); ctx.fillStyle=col(m,.6,-22); ctx.beginPath(); ctx.arc(0,0,R*.32,0,TAU); ctx.fill(); break; }
+      case 'radiolaria': { ctx.beginPath(); ctx.arc(0,0,R,0,TAU); ctx.fillStyle=col(m,.16,22); ctx.fill(); ctx.lineWidth=1.5; ctx.strokeStyle=col(m,.55,18); ctx.stroke(); ctx.beginPath(); ctx.arc(0,0,R*.6,0,TAU); ctx.strokeStyle=col(m,.3,10); ctx.lineWidth=1; ctx.stroke(); ctx.fillStyle=col(m,.85,8); for(const d of m.dots){ ctx.beginPath(); ctx.arc(Math.cos(d.a)*d.rad*R,Math.sin(d.a)*d.rad*R,d.sz,0,TAU); ctx.fill(); } break; }
+      case 'spindle': { const L=R*2.8,w=R*1.0; ctx.beginPath(); ctx.moveTo(-L/2,0); ctx.quadraticCurveTo(0,-w,L/2,0); ctx.quadraticCurveTo(0,w,-L/2,0); ctx.closePath(); ctx.fillStyle=col(m,.45); ctx.fill(); ctx.lineWidth=1.5; ctx.strokeStyle=col(m,.75,18); ctx.stroke(); ctx.strokeStyle=col(m,.5,-10); ctx.lineWidth=1; ctx.beginPath(); ctx.moveTo(-L*.4,0); ctx.lineTo(L*.4,0); ctx.stroke(); for(let i=1;i<m.striae;i++){ const x=-L/2+L*i/m.striae, hh=w*.55*(1-Math.abs(x)/(L/2)); ctx.beginPath(); ctx.moveTo(x,-hh); ctx.lineTo(x,hh); ctx.stroke(); } break; }
+      case 'crescent': { const L=R*1.5,bend=R*1.3,th=R*.62; ctx.beginPath(); ctx.moveTo(-L,0); ctx.quadraticCurveTo(0,-bend,L,0); ctx.quadraticCurveTo(0,-bend+th,-L,0); ctx.closePath(); ctx.fillStyle=col(m,.45); ctx.fill(); ctx.lineWidth=1.5; ctx.strokeStyle=col(m,.75,18); ctx.stroke(); ctx.strokeStyle=col(m,.4,-8); ctx.lineWidth=1; ctx.beginPath(); ctx.moveTo(-L*.8,-bend*.18); ctx.quadraticCurveTo(0,-bend*.55,L*.8,-bend*.18); ctx.stroke(); break; }
+      case 'sun': case 'urchin': { const R0=R*.85, Rs=R*(m.kind==='urchin'?1.5:1.9); ctx.lineWidth=m.kind==='urchin'?1:1.3; ctx.strokeStyle=col(m,.6,12); for(let i=0;i<m.spikes;i++){ const a=i/m.spikes*TAU, sh=Math.sin(tt*.003+i)*R*.12; ctx.beginPath(); ctx.moveTo(Math.cos(a)*R0,Math.sin(a)*R0); ctx.lineTo(Math.cos(a)*(Rs+sh),Math.sin(a)*(Rs+sh)); ctx.stroke(); } ctx.beginPath(); ctx.arc(0,0,R0,0,TAU); ctx.fillStyle=col(m,.5); ctx.fill(); ctx.strokeStyle=col(m,.7,18); ctx.lineWidth=1.5; ctx.stroke(); ctx.fillStyle=col(m,.6,-22); ctx.beginPath(); ctx.arc(0,0,R0*.4,0,TAU); ctx.fill(); break; }
+      case 'star': { ctx.beginPath(); for(let i=0;i<m.arms*2;i++){ const a=i/(m.arms*2)*TAU, rr=(i%2)?R*.42:R*1.15; const x=Math.cos(a)*rr,y=Math.sin(a)*rr; i?ctx.lineTo(x,y):ctx.moveTo(x,y);} ctx.closePath(); ctx.fillStyle=col(m,.45); ctx.fill(); ctx.lineWidth=1.5; ctx.strokeStyle=col(m,.7,18); ctx.stroke(); ctx.fillStyle=col(m,.6,-20); ctx.beginPath(); ctx.arc(0,0,R*.28,0,TAU); ctx.fill(); break; }
+      case 'cog': { const t=m.teeth; ctx.beginPath(); for(let i=0;i<t*2;i++){ const a=i/(t*2)*TAU, rr=(i%2)?R*.82:R*1.08; const x=Math.cos(a)*rr,y=Math.sin(a)*rr; i?ctx.lineTo(x,y):ctx.moveTo(x,y);} ctx.closePath(); ctx.fillStyle=col(m,.4); ctx.fill(); ctx.lineWidth=1.5; ctx.strokeStyle=col(m,.6,15); ctx.stroke(); ctx.beginPath(); ctx.arc(0,0,R*.6,0,TAU); ctx.stroke(); ctx.lineWidth=1; for(let i=0;i<t;i++){ const a=i/t*TAU; ctx.beginPath(); ctx.moveTo(Math.cos(a)*R*.25,Math.sin(a)*R*.25); ctx.lineTo(Math.cos(a)*R*.6,Math.sin(a)*R*.6); ctx.stroke(); } ctx.fillStyle=col(m,.5,-18); ctx.beginPath(); ctx.arc(0,0,R*.22,0,TAU); ctx.fill(); break; }
+      case 'amoeba': { const K=m.lobes.length, pp=[]; for(let i=0;i<K;i++){ const a=i/K*TAU, rr=R*m.lobes[i]*(1+Math.sin(tt*.0015+i)*.08); pp.push([Math.cos(a)*rr,Math.sin(a)*rr]); } ctx.beginPath(); ctx.moveTo((pp[K-1][0]+pp[0][0])/2,(pp[K-1][1]+pp[0][1])/2); for(let i=0;i<K;i++){ const n=pp[(i+1)%K]; ctx.quadraticCurveTo(pp[i][0],pp[i][1],(pp[i][0]+n[0])/2,(pp[i][1]+n[1])/2);} ctx.closePath(); ctx.fillStyle=col(m,.42); ctx.fill(); ctx.lineWidth=1.5; ctx.strokeStyle=col(m,.65,15); ctx.stroke(); ctx.fillStyle=col(m,.5,-20); ctx.beginPath(); ctx.arc(R*.1,0,R*.26,0,TAU); ctx.fill(); ctx.beginPath(); ctx.arc(-R*.35,R*.2,R*.12,0,TAU); ctx.fill(); break; }
+      case 'flagellate': { ctx.lineWidth=1.5; ctx.strokeStyle=col(m,.55,10); ctx.beginPath(); for(let i=0;i<=16;i++){ const t=i/16, x=-R-t*R*2.6, y=Math.sin(t*10+tt*.02+m.phase)*R*.55*t; i?ctx.lineTo(x,y):ctx.moveTo(x,y);} ctx.stroke(); ctx.beginPath(); ctx.ellipse(0,0,R,R*.66,0,0,TAU); ctx.fillStyle=col(m,.5); ctx.fill(); ctx.strokeStyle=col(m,.72,18); ctx.lineWidth=1.5; ctx.stroke(); ctx.fillStyle=col(m,.6,-22); ctx.beginPath(); ctx.arc(R*.25,0,R*.26,0,TAU); ctx.fill(); break; }
+      case 'chain': { const sp=R*1.5; ctx.lineWidth=1.4; ctx.strokeStyle=col(m,.6,14); ctx.fillStyle=col(m,.28,10); for(let i=0;i<m.segs;i++){ const x=(i-(m.segs-1)/2)*sp, y=Math.sin(i*0.7+tt*.003)*R*m.amp*2, w=R*.7,h=R*1.0; ctx.beginPath(); ctx.rect(x-w,y-h,w*2,h*2); ctx.fill(); ctx.stroke(); } break; }
+      case 'ciliate': { const L=R*1.45,Wd=R*0.82, nc=m.cilia||20; ctx.lineWidth=1; ctx.strokeStyle=col(m,.5,12);
+        for(let i=0;i<nc;i++){ const a=i/nc*TAU, ex=Math.cos(a)*L, ey=Math.sin(a)*Wd, beat=Math.sin(tt*.02+i*0.6)*2.4, nx=Math.cos(a), ny=Math.sin(a); ctx.beginPath(); ctx.moveTo(ex,ey); ctx.lineTo(ex+nx*4-ny*beat, ey+ny*4+nx*beat); ctx.stroke(); }
+        ctx.beginPath(); ctx.ellipse(0,0,L,Wd,0,0,TAU); ctx.fillStyle=col(m,.5); ctx.fill(); ctx.lineWidth=1.5; ctx.strokeStyle=col(m,.72,18); ctx.stroke();
+        ctx.fillStyle=col(m,.6,-22); ctx.beginPath(); ctx.arc(-R*.25,0,R*.26,0,TAU); ctx.fill(); ctx.fillStyle=col(m,.4,-8); ctx.beginPath(); ctx.arc(R*.4,R*.12,R*.15,0,TAU); ctx.fill(); break; }
+      case 'rotifer': { const L=R*1.5,Wd=R*0.66; ctx.beginPath(); ctx.moveTo(-L,0); ctx.quadraticCurveTo(-L*.2,-Wd,L*.7,-Wd*.55); ctx.quadraticCurveTo(L,0,L*.7,Wd*.55); ctx.quadraticCurveTo(-L*.2,Wd,-L,0); ctx.closePath();
+        ctx.fillStyle=col(m,.45); ctx.fill(); ctx.lineWidth=1.5; ctx.strokeStyle=col(m,.72,16); ctx.stroke();
+        ctx.lineWidth=1; ctx.strokeStyle=col(m,.55,12); const cr=m.crown||10;
+        for(let s=-1;s<=1;s+=2){ const cx=L*.72, cy=s*Wd*.4, wr=R*.42; ctx.beginPath(); ctx.arc(cx,cy,wr*.5,0,TAU); ctx.stroke(); for(let i=0;i<cr;i++){ const a=i/cr*TAU+tt*.02*s; ctx.beginPath(); ctx.moveTo(cx,cy); ctx.lineTo(cx+Math.cos(a)*wr,cy+Math.sin(a)*wr); ctx.stroke(); } }
+        ctx.fillStyle=col(m,.5,-18); ctx.beginPath(); ctx.arc(-L*.3,0,R*.22,0,TAU); ctx.fill(); break; }
+      case 'ancestor': { ctx.beginPath(); m.verts.forEach((v,i)=> i?ctx.lineTo(v.x,v.y):ctx.moveTo(v.x,v.y)); ctx.closePath(); ctx.fillStyle=`rgba(${120*m.shade|0},${108*m.shade|0},${92*m.shade|0},0.6)`; ctx.fill(); ctx.lineWidth=1.5; ctx.strokeStyle='rgba(70,64,56,0.6)'; ctx.stroke();
+        const gl=0.1+0.08*Math.sin(tt*.004+m.phase); ctx.fillStyle=`rgba(150,230,190,${gl})`; ctx.beginPath(); ctx.arc(0,0,R*.34,0,TAU); ctx.fill(); ctx.strokeStyle=`rgba(170,255,210,${gl+0.05})`; ctx.lineWidth=1; ctx.beginPath(); ctx.arc(0,0,R*.34,0,TAU); ctx.stroke(); break; }
+    }
+    ctx.restore(); }
+  function drawDebris(o){ ctx.save(); ctx.translate(o.x,o.y); ctx.rotate(o.ang); ctx.beginPath(); o.verts.forEach((v,i)=> i?ctx.lineTo(v.x,v.y):ctx.moveTo(v.x,v.y)); ctx.closePath(); ctx.fillStyle=`rgba(${110*o.shade|0},${100*o.shade|0},${90*o.shade|0},0.55)`; ctx.fill(); ctx.lineWidth=1.5; ctx.strokeStyle='rgba(60,55,50,0.6)'; ctx.stroke(); ctx.restore(); }
+
+  // ---- ずかんアイコン（drawMicrobe を流用、未取得はシルエット）----
+  function extentOf(m){ switch(m.kind){
+    case 'spindle': return 1.45; case 'crescent': return 1.7; case 'sun': return 2.05; case 'urchin': return 1.65;
+    case 'star': return 1.2; case 'cog': return 1.12; case 'amoeba': return 1.25; case 'radiolaria': return 1.05;
+    case 'cocci': return 1.15; case 'flagellate': return 1.2; case 'ciliate': return 1.5; case 'rotifer': return 1.55;
+    case 'chain': return Math.max(1.4,(m.segs*1.5)/2); default: return 1.4; } }
+  function drawDexIcon(cvs,kind,got){ const g=cvs.getContext('2d'),w=cvs.width,h=cvs.height; g.clearRect(0,0,w,h);
+    const half=Math.min(w,h)/2*0.84; g.save(); g.translate(w/2,h/2); let m;
+    if(kind==='ancestor'){ m=makeAncestor(0,0,1); m.ang=0; const s=half/(STD_R*1.1); g.scale(s,s); }
+    else { const spec=KINDS.find(x=>x.k===kind); m=makeMicrobe(spec,0,0); m.ang=0; m.r=half/extentOf(m); }
+    drawMicrobe(m,0,g);
+    if(!got){ g.globalCompositeOperation='source-in'; g.fillStyle='rgba(150,180,170,0.55)'; g.fillRect(-w*2,-h*2,w*4,h*4); }
+    g.restore(); }
+
+  function draw(tt){ ctx.fillStyle='#030407'; ctx.fillRect(0,0,W,H);
+    ctx.save(); ctx.translate(W/2-cam.x,H/2-cam.y);
+    ctx.beginPath(); ctx.arc(0,0,RD,0,TAU); const med=ctx.createRadialGradient(0,0,RD*.1,0,0,RD); med.addColorStop(0,'#0e1a1d'); med.addColorStop(1,'#070d10'); ctx.fillStyle=med; ctx.fill();
+    ctx.save(); ctx.clip();
+    for(const m of motes){ ctx.globalAlpha=m.a; ctx.fillStyle='#9fe7d0'; ctx.beginPath(); ctx.arc(m.x,m.y,m.r,0,TAU); ctx.fill(); } ctx.globalAlpha=1;
+    for(const d of drops){ ctx.globalAlpha=d.life*.5; ctx.fillStyle='rgba(160,255,210,0.8)'; ctx.beginPath(); ctx.ellipse(d.x,d.y,d.r*.7,d.r,0,0,TAU); ctx.fill(); } ctx.globalAlpha=1;
+    for(const o of debris) drawDebris(o);
+    for(const m of microbes) if(m.kind==='ancestor') drawMicrobe(m,tt);
+    for(const m of microbes) if(m.decor) drawMicrobe(m,tt);
+    for(const m of microbes) if(m.solid) drawMicrobe(m,tt);
+    for(const m of microbes) if(m.edible&&m.kind!=='ancestor') drawMicrobe(m,tt);
+    drawPlayer(tt); ctx.restore();
+    ctx.beginPath(); ctx.arc(0,0,RD,0,TAU); ctx.lineWidth=6; ctx.strokeStyle='rgba(170,230,235,0.18)'; ctx.stroke();
+    ctx.beginPath(); ctx.arc(0,0,RD-3,0,TAU); ctx.lineWidth=1.5; ctx.strokeStyle='rgba(220,255,255,0.25)'; ctx.stroke();
+    ctx.restore();
+    const vg=ctx.createRadialGradient(W/2,H/2,Math.min(W,H)*.35,W/2,H/2,Math.max(W,H)*.75); vg.addColorStop(0,'rgba(0,0,0,0)'); vg.addColorStop(1,'rgba(0,0,0,0.55)'); ctx.fillStyle=vg; ctx.fillRect(0,0,W,H); }
+
+  let last=performance.now(),acc=0; const FIXED=1000/60;
+  function loop(now){ acc+=Math.min(now-last,100); last=now; while(acc>=FIXED){ step(); acc-=FIXED; } draw(now); requestAnimationFrame(loop); }
+  requestAnimationFrame(loop);
+})();
+</script>
+</body>
+</html>
