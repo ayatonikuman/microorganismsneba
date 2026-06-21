@@ -42,6 +42,9 @@
   .dexcell .dname { font-size: 10px; color: rgba(235,255,245,0.82); margin-top: 1px; text-align: center; letter-spacing: .03em; }
   .dexcell .dname.dim { color: rgba(180,200,195,0.4); }
   .dexcell .dcnt { font-size: 9px; line-height: 1.2; color: rgba(150,255,205,0.7); }
+  .rfoot { display: flex; gap: 6px; padding: 4px 4px 2px; }
+  .rfoot button { width: auto; flex: 1; text-align: center; }
+  .rfoot button[data-act="reset"] { color: rgba(255,180,170,0.75); }
 </style>
 </head>
 <body>
@@ -49,13 +52,8 @@
 <div id="hint" class="ui">膜をつかんで動かす ／ 小さな生き物に覆いかぶさって取り込む ／ 強く引きちぎって分裂 ／ ゴミを押し分けて進む</div>
 <div id="stats" class="ui"></div>
 <div id="story" class="ui"></div>
-<button id="menuBtn" class="btn" aria-label="メニュー">⚙</button>
+<button id="menuBtn" class="btn" aria-label="きろく・ずかん">📖</button>
 <button id="mute" class="btn" aria-label="音">♪</button>
-<div id="panel" class="panel">
-  <button data-act="records">きろく・ずかん</button>
-  <button data-act="reset">リセット</button>
-  <button data-act="close">とじる</button>
-</div>
 <div id="records" class="panel"></div>
 
 <script>
@@ -92,16 +90,17 @@
 
   // ---- 微生物 ----
   // レア度は「世代を進める／大きく育つ」という進行で開放する設計（運より進行で集める）
-  const KINDS=[ {k:'cocci',w:6,cat:'food'},{k:'spindle',w:5,cat:'food'},{k:'ciliate',w:5,cat:'food',swim:true},
-    {k:'crescent',w:4,cat:'food'},{k:'flagellate',w:4,cat:'food'},{k:'radiolaria',w:3,cat:'food',minGen:2},
-    {k:'sun',w:2,cat:'food',minGen:2},{k:'star',w:2,cat:'food',minGen:2},{k:'rotifer',w:2,cat:'food',swim:true,minGen:3},
-    {k:'amoeba',w:3,cat:'solid'},{k:'cog',w:2,cat:'solid',minGen:2},
-    {k:'urchin',w:1,cat:'solid',minGen:3},{k:'chain',w:2,cat:'decor',minGen:2} ];
+  const KINDS=[ {k:'cocci',w:9,cat:'food'},{k:'spindle',w:7,cat:'food'},{k:'ciliate',w:6,cat:'food',swim:true},
+    {k:'crescent',w:6,cat:'food'},{k:'flagellate',w:5,cat:'food'},{k:'radiolaria',w:3,cat:'food',minGen:2},
+    {k:'sun',w:2,cat:'food',minGen:2},{k:'star',w:2,cat:'food',minGen:2},{k:'rotifer',w:1,cat:'food',swim:true,minGen:3},
+    {k:'amoeba',w:2,cat:'solid'},{k:'cog',w:1,cat:'solid',minGen:2},
+    {k:'urchin',w:1,cat:'solid',minGen:3},{k:'chain',w:1,cat:'decor',minGen:2} ];
   const microbes=[];
-  function pick(food){ const list=KINDS.filter(x=>(food?x.cat==='food':true)&&stats.generation>=(x.minGen||1)); const tot=list.reduce((s,x)=>s+x.w,0); let r=Math.random()*tot; for(const x of list){ if((r-=x.w)<0) return x; } return list[0]; }
+  // mode: 'food'=食べられる種のみ / 'solid'=solid・decorのみ / それ以外=全種（現世代で解禁済みのみ）
+  function pick(mode){ const list=KINDS.filter(x=> stats.generation>=(x.minGen||1) && (mode==='food'?x.cat==='food': mode==='solid'?x.cat!=='food': true)); const tot=list.reduce((s,x)=>s+x.w,0); let r=Math.random()*tot; for(const x of list){ if((r-=x.w)<0) return x; } return list[0]; }
   function randInDish(margin){ const a=rnd(0,TAU), d=rnd(0,RD-margin); return {x:Math.cos(a)*d,y:Math.sin(a)*d}; }
   function makeMicrobe(spec,x,y){ const cat=spec.cat;
-    let r = cat==='food'?rnd(STD_R*.28,STD_R*.62):cat==='solid'?rnd(STD_R*1.0,STD_R*1.6):rnd(STD_R*.3,STD_R*.45);
+    let r = cat==='food'?rnd(STD_R*.28,STD_R*.62):cat==='solid'?rnd(STD_R*1.4,STD_R*1.75):rnd(STD_R*.3,STD_R*.45);
     const warm=cat==='food', h=warm?rnd(36,54):rnd(135,175), s=warm?rnd(60,80):rnd(35,55), l=warm?rnd(58,70):rnd(50,62);
     const m={kind:spec.k,cat,x,y,vx:rnd(-.3,.3),vy:rnd(-.3,.3),r,h,s,l,ang:rnd(0,TAU),spin:rnd(-.006,.006),phase:rnd(0,100),
       edible:cat==='food',solid:cat==='solid',decor:cat==='decor',fear:cat==='food'&&Math.random()<.5};
@@ -116,12 +115,13 @@
     if(spec.k==='ciliate'){ m.cilia=18+(Math.random()*10|0); }
     if(spec.k==='rotifer'){ m.crown=9+(Math.random()*5|0); }
     if(spec.swim){ m.swim=true; m.dir=rnd(0,TAU); m.speed=rnd(.28,.5); }
+    m.eatR = m.decor ? STD_R*rnd(1.35,1.7) : r; // 捕食の大きさ判定。つらなり藻は塊が小さいので別途“大きく育たないと飲めない”半径を持たせる
     return m; }
   function makeAncestor(x,y,gen){ const r=STD_R*0.9, verts=[], n=6+(Math.random()*3|0);
     for(let i=0;i<n;i++){ const a=i/n*TAU, rr=r*rnd(.7,1.1); verts.push({x:Math.cos(a)*rr,y:Math.sin(a)*rr}); }
-    return {kind:'ancestor',cat:'ancestor',x,y,vx:0,vy:0,r,h:32,s:26,l:46,ang:rnd(0,TAU),spin:rnd(-.004,.004),phase:rnd(0,100),
+    return {kind:'ancestor',cat:'ancestor',x,y,vx:0,vy:0,r,eatR:r,h:32,s:26,l:46,ang:rnd(0,TAU),spin:rnd(-.004,.004),phase:rnd(0,100),
       edible:true,solid:false,decor:false,fear:false,gen,verts,shade:rnd(.6,.9)}; }
-  function spawnMicrobe(food){ const p=randInDish(STD_R*2); microbes.push(makeMicrobe(pick(food),p.x,p.y)); }
+  function spawnMicrobe(mode){ const p=randInDish(STD_R*2); microbes.push(makeMicrobe(pick(mode),p.x,p.y)); }
   function populate(){ microbes.length=0; for(let i=0;i<N_MICROBE;i++) spawnMicrobe(false); }
     // 前世のかけら（ancestor）は分裂で生まれる＝2世代目以降のみ出現
   populate();
@@ -141,7 +141,9 @@
   const pointer={sx:W/2,sy:H/2,down:false,active:false}; let grab=-1;
   function s2w(sx,sy){ return {x:sx-W/2+cam.x, y:sy-H/2+cam.y}; }
   function pos(e){ const t=e.touches?e.touches[0]:e; return {x:t.clientX,y:t.clientY}; }
-  function onDown(e){ e.preventDefault(); const p=pos(e); pointer.sx=p.x; pointer.sy=p.y; pointer.down=true; pointer.active=true;
+  function onDown(e){ e.preventDefault();
+    if(records.classList.contains('open')){ records.classList.remove('open'); return; } // ずかんを開いている時はプレイ画面タップで閉じる（つかまない）
+    const p=pos(e); pointer.sx=p.x; pointer.sy=p.y; pointer.down=true; pointer.active=true;
     const w=s2w(p.x,p.y); let bd=1e9,bi=-1; for(let i=0;i<N;i++){ const dx=player.pts[i].x-w.x,dy=player.pts[i].y-w.y,d=dx*dx+dy*dy; if(d<bd){bd=d;bi=i;} }
     grab=(Math.sqrt(bd)<player.baseR*1.8)?bi:-1; if(grab>=0) blip('grab'); hideHint(); }
   function onMove(e){ const p=pos(e); pointer.sx=p.x; pointer.sy=p.y; pointer.active=true; }
@@ -152,7 +154,7 @@
 
   // ---- UI ----
   const statsEl=document.getElementById('stats'), storyEl=document.getElementById('story');
-  const panel=document.getElementById('panel'), records=document.getElementById('records');
+  const records=document.getElementById('records');
   function updateStats(){ statsEl.textContent=`世代 ${stats.generation} ・ 捕食 ${stats.eaten} ・ ずかん ${dexCount()}/${ALL_KINDS.length}`; }
   updateStats();
   let storyTimer; function flash(t){ storyEl.textContent=t; storyEl.classList.add('show'); clearTimeout(storyTimer); storyTimer=setTimeout(()=>storyEl.classList.remove('show'),3600); }
@@ -162,13 +164,13 @@
       h+=`<div class="dexcell"><canvas width="56" height="56" data-kind="${k}" data-got="${got?1:0}"></canvas>`+
         `<span class="dname ${got?'':'dim'}">${got?NAMES[k]:'？？？'}</span>`+
         `<span class="dcnt">${got?'×'+cnt:'&nbsp;'}</span></div>`; }
-    h+=`</div><button data-act="closerec">とじる</button>`; records.innerHTML=h;
+    h+=`</div><div class="rfoot"><button data-act="reset">リセット</button><button data-act="closerec">とじる</button></div>`; records.innerHTML=h;
     for(const cvs of records.querySelectorAll('canvas[data-kind]')) drawDexIcon(cvs,cvs.dataset.kind,cvs.dataset.got==='1'); }
   function resetDish(){ resetStats(); initPlayer(); cam.x=0; cam.y=0; populate(); initDebris(); grab=-1; updateStats(); }
-  document.getElementById('menuBtn').addEventListener('click',()=>{ records.classList.remove('open'); panel.classList.toggle('open'); });
-  panel.addEventListener('click',e=>{ const a=e.target.dataset.act; if(!a) return;
-    if(a==='reset') resetDish(); else if(a==='records'){ buildRecords(); records.classList.add('open'); } panel.classList.remove('open'); });
-  records.addEventListener('click',e=>{ if(e.target.dataset.act==='closerec') records.classList.remove('open'); });
+  function openRecords(){ buildRecords(); records.classList.add('open'); }
+  function closeRecords(){ records.classList.remove('open'); }
+  document.getElementById('menuBtn').addEventListener('click',()=>{ records.classList.contains('open')?closeRecords():openRecords(); });
+  records.addEventListener('click',e=>{ const a=e.target.dataset.act; if(a==='closerec') closeRecords(); else if(a==='reset'){ resetDish(); buildRecords(); } });
 
   // ---- 音 ----
   let actx=null,muted=false; const mbtn=document.getElementById('mute');
@@ -200,32 +202,35 @@
       const sp=Math.hypot(g.x-g.ox,g.y-g.oy); if(sp>9&&Math.random()<.5) drops.push({x:g.x,y:g.y,vx:(g.x-g.ox)*.2,vy:(g.y-g.oy)*.2,life:1,r:rnd(2,6)}); } }
   function collide(){ const P=player.pts;
     for(const o of debris){ for(const p of P){ let dx=p.x-o.x,dy=p.y-o.y,d=Math.hypot(dx,dy)||1e-4; if(d<o.r){ const nx=dx/d,ny=dy/d,pen=o.r-d; p.x+=nx*pen*.6; p.y+=ny*pen*.6; o.vx-=nx*pen*.05; o.vy-=ny*pen*.05; o.x-=nx*pen*.4; o.y-=ny*pen*.4; } } }
-    for(const o of microbes){ if(!o.solid) continue; for(const p of P){ let dx=p.x-o.x,dy=p.y-o.y,d=Math.hypot(dx,dy)||1e-4; if(d<o.r){ const nx=dx/d,ny=dy/d,pen=o.r-d; p.x+=nx*pen*.6; p.y+=ny*pen*.6; o.vx-=nx*pen*.04; o.vy-=ny*pen*.04; o.x-=nx*pen*.4; o.y-=ny*pen*.4; } } } }
+    for(const o of microbes){ if(!o.solid) continue; if(o.r<player.baseR*0.9) continue; // 飲み込めるサイズまで育ったら反発を切る＝すり抜けて包み込める
+      for(const p of P){ let dx=p.x-o.x,dy=p.y-o.y,d=Math.hypot(dx,dy)||1e-4; if(d<o.r){ const nx=dx/d,ny=dy/d,pen=o.r-d; p.x+=nx*pen*.6; p.y+=ny*pen*.6; o.vx-=nx*pen*.04; o.vy-=ny*pen*.04; o.x-=nx*pen*.4; o.y-=ny*pen*.4; } } } }
   function clampDish(){ for(const p of player.pts){ const d=Math.hypot(p.x,p.y); if(d>RD-4){ const k=(RD-4)/d; p.x*=k; p.y*=k; p.ox=p.x; p.oy=p.y; } } }
   function recenter(){ let cx=0,cy=0; for(const p of player.pts){cx+=p.x;cy+=p.y;} cx/=N;cy/=N; player.center.px=player.center.x; player.center.py=player.center.y; player.center.x=cx; player.center.y=cy; }
   function engulf(){ for(let i=microbes.length-1;i>=0;i--){ const m=microbes[i];
-    const er=m.decor?m.r*m.segs*0.8:m.r; // 取込判定に使う実効半径（つらなり藻は長いので大きく扱う）
-    if(er<player.baseR*0.9 && inPlayer(m.x,m.y)){
+    // solidは半径が大きい＝大きく育たないと飲み込めない。decor(つらなり藻)・foodは中心の塊サイズで判定
+    if(m.eatR<player.baseR*0.9 && inPlayer(m.x,m.y)){
       if(m.kind==='ancestor'){
         player.vacuoles.push({ox:m.x-player.center.x,oy:m.y-player.center.y,r:m.r,life:1,h:150});
         setSize(Math.min(MAXR(),Math.sqrt((player.targetArea+Math.PI*m.r*m.r*1.0)/Math.PI)));
       } else {
         const grow=m.edible?0.6:0.4; // solid/decor は成長控えめ
         player.vacuoles.push({ox:m.x-player.center.x,oy:m.y-player.center.y,r:m.r,life:1,h:m.h});
-        setSize(Math.min(MAXR(),Math.sqrt((player.targetArea+Math.PI*er*er*grow)/Math.PI)));
-        spawnMicrobe(m.edible);
+        setSize(Math.min(MAXR(),Math.sqrt((player.targetArea+Math.PI*m.r*m.r*grow)/Math.PI)));
+        spawnMicrobe(m.edible?'food':'solid'); // 同カテゴリを補充して個体群を維持
       }
       stats.eaten++; stats.dex[m.kind]=(stats.dex[m.kind]||0)+1; microbes.splice(i,1); blip('eat'); updateStats();
       for(let k=0;k<6;k++) drops.push({x:m.x,y:m.y,vx:rnd(-3,3),vy:rnd(-3,3),life:1,r:rnd(2,5)});
     } } }
   function tearCheck(){ if(grab<0||!pointer.down) return; const bb=bbox(), aspect=Math.max(bb.w,bb.h)/Math.max(Math.min(bb.w,bb.h),1);
     if(aspect>TEAR_ASPECT && player.baseR>STD_R*0.85){ const cx=player.center.x,cy=player.center.y, horiz=bb.w>=bb.h, ax=horiz?1:0, ay=horiz?0:1;
-      const cr=player.baseR*0.5, off=player.baseR*0.7, ch=makeMicrobe({k:'cocci',cat:'food'},cx+ax*off,cy+ay*off); ch.r=cr; ch.vx=ax*6; ch.vy=ay*6; microbes.push(ch);
+      const cr=player.baseR*0.5, off=player.baseR*0.7, ch=makeMicrobe({k:'cocci',cat:'food'},cx+ax*off,cy+ay*off); ch.r=cr; ch.eatR=cr; ch.vx=ax*6; ch.vy=ay*6; microbes.push(ch);
       setSize(Math.sqrt(Math.max(Math.PI*(STD_R*0.7)**2, player.targetArea-Math.PI*cr*cr)/Math.PI));
       for(let k=0;k<10;k++) drops.push({x:cx,y:cy,vx:rnd(-5,5),vy:rnd(-5,5),life:1,r:rnd(2,5)}); grab=-1; blip('tear'); } }
   function divide(){ const cx=player.center.x, cy=player.center.y, oldGen=stats.generation;
     const an=makeAncestor(cx+rnd(-6,6),cy+rnd(-6,6),oldGen); an.vx=rnd(-3,3); an.vy=rnd(-3,3); microbes.push(an);
     stats.generation++; setSize(STD_R); ringAt(cx,cy,STD_R); player.vacuoles.length=0; player.ripeT=0; grab=-1;
+    // この世代で新たに解禁される種を確実に登場させる（世代を重ねても出ない問題の対策）
+    for(const spec of KINDS) if((spec.minGen||1)===stats.generation){ const p=randInDish(STD_R*2); microbes.push(makeMicrobe(spec,p.x,p.y)); }
     for(let k=0;k<16;k++) drops.push({x:cx,y:cy,vx:rnd(-6,6),vy:rnd(-6,6),life:1,r:rnd(2,6)});
     blip('born'); flash('第 '+stats.generation+' 世代'); updateStats(); }
   function updMicrobes(){ for(const m of microbes){ m.ang+=m.spin;
